@@ -1,6 +1,10 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include <list>
+#include <vector>
+#include <iostream>
+
 #include <node.h>
 #include <node_buffer.h>
 #include <nan.h>
@@ -179,10 +183,6 @@ NAN_METHOD(LZ4CompressHCLimited) {
   NanReturnValue(result);
 }
 
-void null_cb(char* data, void* hint) {
-  
-}
-
 //-----------------------------------------------------------------------------
 // LZ4 Stream
 //-----------------------------------------------------------------------------
@@ -208,7 +208,7 @@ NAN_METHOD(LZ4Stream_create) {
     NanReturnUndefined();
   }
 
-  Local<Object> handle = NanNewBufferHandle((char *) p, LZ4_sizeofStreamState(), null_cb, NULL);
+  Local<Object> handle = NanNewBufferHandle((char *) p, LZ4_sizeofStreamState());
 
   NanReturnValue(handle);
 }
@@ -343,6 +343,94 @@ NAN_METHOD(LZ4Uncompress) {
   NanReturnValue(result);
 }
 
+//-----------------------------------------------------------------------------
+// LZ4 Compress_full
+//-----------------------------------------------------------------------------
+// {Buffer} input
+NAN_METHOD(LZ4Compress_full) {
+  NanScope();
+
+  uint32_t alen = args.Length();
+  if (alen != 1) {
+    NanThrowError(Exception::Error(NanNew<String>("Wrong number of arguments")));
+    NanReturnUndefined();
+  }
+
+  if (!Buffer::HasInstance(args[0])) {
+    NanThrowError(Exception::TypeError(NanNew<String>("Wrong arguments")));
+    NanReturnUndefined();
+  }
+  Local<Object> input = args[0]->ToObject();
+
+  char* data = Buffer::Data(input);
+  std::size_t size = Buffer::Length(input);
+  int max = LZ4_compressBound(size);
+  char* buf = new char[max];
+
+  int count = LZ4_compress(data, buf, size);
+  if (count < 0)
+    NanThrowError(Exception::Error(NanNew<String>("Encoder failure")));
+
+  NanReturnValue(NanBufferUse(buf, count));
+}
+
+//-----------------------------------------------------------------------------
+// LZ4 Uncompress_full
+//-----------------------------------------------------------------------------
+// {Buffer} input
+NAN_METHOD(LZ4Uncompress_full) {
+  NanScope();
+
+  uint32_t alen = args.Length();
+  if (alen != 1) {
+    NanThrowError(Exception::Error(NanNew<String>("Wrong number of arguments")));
+    NanReturnUndefined();
+  }
+
+  if (!Buffer::HasInstance(args[0])) {
+    NanThrowError(Exception::TypeError(NanNew<String>("Wrong arguments")));
+    NanReturnUndefined();
+  }
+  Local<Object> input = args[0]->ToObject();
+
+  std::list<std::vector<char>*> blocks;
+
+  char* data = Buffer::Data(input);
+  int size = Buffer::Length(input);
+
+  int block_size = 1024;
+  int chunk_size = LZ4_compressBound(block_size);
+  int offset = 0;
+  int total = 0;
+
+  LZ4_streamDecode_t* stream = LZ4_createStreamDecode();
+  while (offset < size) {
+    std::vector<char>* buf = new std::vector<char>(block_size);
+    int next = std::min(size - offset, chunk_size);
+    int bytes = LZ4_decompress_safe_continue(stream, data + offset, &(*buf)[0], next, block_size);
+    if (bytes < 0) {
+      for (std::list<std::vector<char>*>::iterator itr = blocks.begin(); itr != blocks.end(); ++itr)
+        delete *itr;
+      NanThrowError(Exception::Error(NanNew<String>("Decoder failure")));
+    }
+    buf->resize(bytes);
+    offset += chunk_size;
+    total += bytes;
+    blocks.push_back(buf);
+    break;
+  }
+  LZ4_freeStreamDecode(stream);
+
+  char* buf = new char[total];
+  char* ptr = buf;
+  for (std::list<std::vector<char>*>::iterator itr = blocks.begin(); itr != blocks.end(); ++itr) {
+    std::copy((*itr)->begin(), (*itr)->end(), ptr);
+    ptr += (*itr)->size();
+    delete *itr;
+  }
+  NanReturnValue(NanNewBufferHandle(buf, total));
+}
+
 // {Buffer} input, {Buffer} output
 NAN_METHOD(LZ4Uncompress_fast) {
   NanScope();
@@ -381,9 +469,11 @@ void init_lz4(Handle<Object> target) {
 
   target->Set(NanNew<String>("compressHC"), NanNew<FunctionTemplate>(LZ4CompressHC)->GetFunction());
   target->Set(NanNew<String>("compressHCLimited"), NanNew<FunctionTemplate>(LZ4CompressHCLimited)->GetFunction());
+  target->Set(NanNew<String>("compress_full"), NanNew<FunctionTemplate>(LZ4Compress_full)->GetFunction());
 
   target->Set(NanNew<String>("uncompress"), NanNew<FunctionTemplate>(LZ4Uncompress)->GetFunction());
   target->Set(NanNew<String>("uncompress_fast"), NanNew<FunctionTemplate>(LZ4Uncompress_fast)->GetFunction());
+  target->Set(NanNew<String>("uncompress_full"), NanNew<FunctionTemplate>(LZ4Uncompress_full)->GetFunction());
 }
 
 NODE_MODULE(lz4, init_lz4)

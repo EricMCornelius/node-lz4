@@ -21,4 +21,10 @@ describe('LZ4 block encoder/decoder', function () {
     done()
   })
 
+  it('should also encode/decode data', function() {
+    var data = new Buffer('{"hello":"world","this":"sucks"}');
+    var encoded = lz4.nativeEncode(data);
+    var decoded = lz4.nativeDecode(encoded);
+    assert( data.toString() === decoded.toString() );    
+  });
 })
